@@ -1,109 +1,139 @@
-from .BaseTokenizer import BaseTokenizer
+"""
+TurkishTokenizer implementation following Algorithm 1 (encode) and
+Algorithm 2 (decode) of
+
+    Bayram, M. A., Fincan, A. A., Gümüş, A. S., Karakaş, S., Diri, B.,
+    Yıldırım, S., Çelik, D. "Tokens with Meaning: A Hybrid Tokenization
+    Approach for Turkish", 2025.
+"""
+
 import string
 
+from .BaseTokenizer import BaseTokenizer
+
+
 class TurkishTokenizer(BaseTokenizer):
+    ID_UPPERCASE = "<uppercase>"
+    ID_UNK = "<unk>"
+    ID_SPACE = "<space>"
+    _PUNCT_PREFIX = "<P:"
+    _PUNCT_SUFFIX = ">"
+
     def __init__(self, morph_analyzer=None, bpe_fallback=None):
-        """
-        Initialization. 
-        """
         self.morph_analyzer = morph_analyzer
         self.bpe_fallback = bpe_fallback
-        
-        # specific tokens according to the article
-        self.ID_UPPERCASE = "<uppercase>"
 
-    def _preprocess(self, raw_text: str) -> str:
-        """
-        Separates punctuation marks with spaces so that the loop sees them as separate tokens
-        """
+    # ENCODE
+    def _preprocess(self, raw_text):
         text = raw_text
         for p in string.punctuation:
-            text = text.replace(p, f" {p} ")
+            text = text.replace(p, " " + p + " ")
         return text
 
-    def encode(self, text: str) -> list[int]:
-        """
-        TurkishTokenizer Tokenization Pipeline
-        """
+    def encode(self, text):
+        if self.morph_analyzer is None:
+            raise ValueError("TurkishTokenizer requires a morph_analyzer.")
+
         token_ids = []
-        
-        processed_text = self._preprocess(text)
-        
-        for w in processed_text.split():
-            
-            if w in string.punctuation:
-                token_ids.append(w) 
+        processed = self._preprocess(text)
+
+        for w in processed.split():
+            if len(w) == 1 and w in string.punctuation:
+                token_ids.append(self._punct_id(w))
                 continue
-                
-            if w[0].isupper():
+
+            if self._is_capitalized(w):
                 token_ids.append(self.ID_UPPERCASE)
-                w = w.lower() 
-                
-            # returns root ID anf a list of suffix ID 
+                w = self._turkish_lower(w)
+
             root_id, suffix_ids = self.morph_analyzer.analyze(w)
-            
             if root_id is not None:
                 token_ids.append(root_id)
                 token_ids.extend(suffix_ids)
+            elif self.bpe_fallback is not None:
+                token_ids.extend(self.bpe_fallback.encode(w))
             else:
-                subwords = self.bpe_fallback.encode(w)
-                token_ids.extend(subwords)
-                
+                token_ids.append(self.ID_UNK)
+
         return token_ids
 
-    def decode(self, token_ids: list[int]) -> str:
-        """
-        TurkishTokenizer Decoding Pipeline
-        Reconstructs the original text string from a sequence of token IDs.
-        """
+    # DECODE
+
+    def decode(self, token_ids):
         parts = []
         i = 0
-        total_tokens = len(token_ids)
+        n = len(token_ids)
 
-        while i < total_tokens:
-            token_id = token_ids[i]
+        while i < n:
+            tid = token_ids[i]
 
-            if token_id == self.ID_UPPERCASE:
-                next_token_id = token_ids[i + 1]
-                
-                base_word = self.morph_analyzer.lookup_base_string(next_token_id)
-                
-                # Capitalize it using Turkish rules and append
-                capitalized_word = self._turkish_capitalize(base_word)
-                parts.append(capitalized_word)
-                
+            if tid == self.ID_UPPERCASE and i + 1 < n:
+                next_tid = token_ids[i + 1]
+                base = self._surface_of(next_tid, parts)
+                lead = ""
+                while base.startswith(" "):
+                    lead += " "
+                    base = base[1:]
+                parts.append(lead + self._turkish_capitalize(base))
                 i += 2
                 continue
 
-            # Get surface form variants (candidates)
-            candidates = self.morph_analyzer.reverse_lookup(token_id)
-
+            candidates = self.morph_analyzer.reverse_lookup(tid)
             if len(candidates) > 1:
                 ctx = self.morph_analyzer.get_vowel_context(parts)
-                
-                # Apply phonology rules to select the correct variant
-                surface = self.morph_analyzer.apply_phonology(token_id, ctx, token_ids, i)
-            
+                surface = self.morph_analyzer.apply_phonology(tid, ctx, parts)
             else:
                 surface = candidates[0]
 
-            parts.append(surface)
+            parts.append(self._unwrap_special(surface))
             i += 1
 
         return "".join(parts)
 
-    def _turkish_capitalize(self, word: str) -> str:
-        """
-        Helper function to handle Turkish-specific capitalization.
-        Ensures 'i' becomes 'İ' and 'ı' becomes 'I'.
-        """
+    # helpers
+
+    def _surface_of(self, tid, parts):
+        candidates = self.morph_analyzer.reverse_lookup(tid)
+        if len(candidates) > 1:
+            ctx = self.morph_analyzer.get_vowel_context(parts)
+            return self.morph_analyzer.apply_phonology(tid, ctx, parts)
+        return self._unwrap_special(candidates[0])
+
+    @classmethod
+    def _punct_id(cls, char):
+        return cls._PUNCT_PREFIX + char + cls._PUNCT_SUFFIX
+
+    @classmethod
+    def _unwrap_special(cls, surface):
+        if isinstance(surface, str):
+            if surface.startswith(cls._PUNCT_PREFIX) and surface.endswith(cls._PUNCT_SUFFIX):
+                return surface[len(cls._PUNCT_PREFIX):-len(cls._PUNCT_SUFFIX)]
+            if surface == cls.ID_SPACE:
+                return " "
+        return surface
+
+    # Turkish-aware casing
+
+    _TR_LOWER = str.maketrans({"İ": "i", "I": "ı"})
+    _TR_UPPER = str.maketrans({"i": "İ", "ı": "I"})
+
+    @classmethod
+    def _turkish_lower(cls, word):
+        return word.translate(cls._TR_LOWER).lower()
+
+    @classmethod
+    def _turkish_upper_char(cls, ch):
+        return ch.translate(cls._TR_UPPER).upper()
+
+    @classmethod
+    def _is_capitalized(cls, word):
+        if not word:
+            return False
+        first = word[0]
+        return first.isupper() or first == "İ"
+
+    @classmethod
+    def _turkish_capitalize(cls, word):
         if not word:
             return word
-            
-        first_char = word[0]
-        if first_char == 'i':
-            return 'İ' + word[1:]
-        elif first_char == 'ı':
-            return 'I' + word[1:]
-        else:
-            return first_char.upper() + word[1:]
+        return cls._turkish_upper_char(word[0]) + word[1:]
