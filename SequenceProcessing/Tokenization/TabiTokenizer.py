@@ -1,149 +1,162 @@
-import argparse
-from pathlib import Path
+"""
+Tabbii tokenizer wrapper.
 
-from datatrove.executor import LocalPipelineExecutor
-from datatrove.pipeline.filters import SamplerFilter
-from datatrove.pipeline.readers import JsonlReader
-from datatrove.pipeline.writers import JsonlWriter
-from datatrove.pipeline.tokens.tokenizer import DocumentTokenizer
+This class provides a unified BaseTokenizer-compatible interface
+for the Tabbii Turkish tokenizer so it can be evaluated alongside
+CosmosGPT2, TurkishTokenizer, and other baselines.
 
+The tokenizer backend is loaded lazily on first use.
+"""
 
-# -----------------------------
-# Argument Parser
-# -----------------------------
-
-parser = argparse.ArgumentParser(
-    description="Local tokenization pipeline using Datatrove."
-)
-
-parser.add_argument(
-    "data_path",
-    type=str,
-    help="Path to the JSONL data file."
-)
-
-parser.add_argument(
-    "output_name",
-    type=str,
-    help="Name of the output run."
-)
-
-parser.add_argument(
-    "--n_tasks",
-    type=int,
-    default=4,
-    help="Number of parallel tasks."
-)
-
-parser.add_argument(
-    "--max_toks",
-    type=int,
-    default=int(1e8),
-    help="Maximum tokens per output file."
-)
-
-parser.add_argument(
-    "--tokenizer",
-    type=str,
-    default="gpt2",
-    help="Tokenizer name from HuggingFace."
-)
-
-parser.add_argument(
-    "--text_key",
-    type=str,
-    default="text",
-    help="JSON key containing the text."
-)
-
-parser.add_argument(
-    "--sample",
-    type=float,
-    default=1.0,
-    help="Sampling rate between 0 and 1."
-)
-
-parser.add_argument(
-    "--jsonl_output",
-    "-jo",
-    type=str,
-    default=None,
-    help="Optional path to save sampled JSONL."
-)
+from BaseTokenizer import BaseTokenizer
 
 
-# -----------------------------
-# Main
-# -----------------------------
+class TabbiiTokenizer(BaseTokenizer):
+    """Wrapper for the Tabbii Turkish tokenizer."""
+
+    DEFAULT_MODEL_PATH = "tabbii-tokenizer"
+
+    def __init__(
+        self,
+        model_name_or_path: str = None,
+        add_special_tokens: bool = False,
+        cache_dir: str = None,
+        revision: str = None,
+        local_files_only: bool = False,
+        **from_pretrained_kwargs,
+    ):
+        """
+        Parameters
+        ----------
+        model_name_or_path
+            Path or HuggingFace repo ID.
+
+        add_special_tokens
+            Whether to include BOS/EOS tokens.
+
+        cache_dir, revision, local_files_only
+            Forwarded to tokenizer loader.
+        """
+
+        self.model_name_or_path = (
+            model_name_or_path or self.DEFAULT_MODEL_PATH
+        )
+
+        self.add_special_tokens = add_special_tokens
+
+        self._cache_dir = cache_dir
+        self._revision = revision
+        self._local_files_only = local_files_only
+        self._extra_kwargs = from_pretrained_kwargs
+
+        self._tokenizer = None
+
+    # ---------------------------------------------------------
+    # Lazy loading
+    # ---------------------------------------------------------
+
+    @property
+    def tokenizer(self):
+
+        if self._tokenizer is None:
+
+            try:
+                from transformers import AutoTokenizer
+
+            except ImportError as exc:
+                raise ImportError(
+                    "TabbiiTokenizer requires transformers.\n"
+                    "Install with: pip install transformers"
+                ) from exc
+
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name_or_path,
+                cache_dir=self._cache_dir,
+                revision=self._revision,
+                local_files_only=self._local_files_only,
+                **self._extra_kwargs,
+            )
+
+        return self._tokenizer
+
+    # ---------------------------------------------------------
+    # BaseTokenizer API
+    # ---------------------------------------------------------
+
+    def encode(self, text: str) -> list:
+        """Encode text into token IDs."""
+
+        return self.tokenizer.encode(
+            text,
+            add_special_tokens=self.add_special_tokens,
+        )
+
+    def decode(self, token_ids) -> str:
+        """Decode token IDs back into text."""
+
+        return self.tokenizer.decode(
+            list(token_ids),
+            skip_special_tokens=not self.add_special_tokens,
+        )
+
+    # ---------------------------------------------------------
+    # Convenience methods
+    # ---------------------------------------------------------
+
+    def tokenize(self, text: str) -> list:
+        """Return token strings."""
+
+        return self.tokenizer.tokenize(text)
+
+    def convert_ids_to_tokens(self, token_ids) -> list:
+
+        return self.tokenizer.convert_ids_to_tokens(
+            list(token_ids)
+        )
+
+    @property
+    def vocab_size(self) -> int:
+
+        return self.tokenizer.vocab_size
+
+    @property
+    def pad_token_id(self):
+
+        return self.tokenizer.pad_token_id
+
+    @property
+    def eos_token_id(self):
+
+        return self.tokenizer.eos_token_id
+
+    def __repr__(self):
+
+        loaded = (
+            "loaded"
+            if self._tokenizer is not None
+            else "lazy"
+        )
+
+        return (
+            f"TabbiiTokenizer("
+            f"model={self.model_name_or_path!r}, "
+            f"{loaded})"
+        )
+
 
 if __name__ == "__main__":
 
-    args = parser.parse_args()
+    sentence = "Türkiye Cumhuriyeti'nin başkenti Ankara'dır."
 
-    # -----------------------------
-    # Create local directories
-    # -----------------------------
+    tok = TabbiiTokenizer()
 
-    base_dir = Path(__file__).parent
+    print(f"Model: {tok.model_name_or_path}")
+    print(f"Input: {sentence}")
 
-    tokenized_dir = base_dir / "tokenized" / args.output_name
-    tmp_dir = base_dir / "tmp" / args.output_name
-    logs_dir = base_dir / "logs" / args.output_name
+    ids = tok.encode(sentence)
 
-    tokenized_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    print(f"IDs   ({len(ids)}): {ids}")
 
-    # -----------------------------
-    # Build pipeline
-    # -----------------------------
+    print(f"Pieces: {tok.convert_ids_to_tokens(ids)}")
 
-    pipeline = [
-
-        JsonlReader(
-            args.data_path,
-            text_key=args.text_key,
-        ),
-
-        SamplerFilter(
-            rate=args.sample
-        ),
-
-        *(
-            [JsonlWriter(args.jsonl_output)]
-            if args.jsonl_output
-            else []
-        ),
-
-        DocumentTokenizer(
-
-            output_folder=str(tokenized_dir),
-
-            local_working_dir=str(tmp_dir),
-
-            tokenizer_name_or_path=args.tokenizer,
-
-            eos_token=None,
-
-            batch_size=1000,
-
-            max_tokens_per_file=args.max_toks,
-
-            shuffle=True,
-        ),
-    ]
-
-    # -----------------------------
-    # Run locally
-    # -----------------------------
-
-    executor = LocalPipelineExecutor(
-
-        pipeline=pipeline,
-
-        tasks=args.n_tasks,
-    )
-
-    executor.run()
-
-    print("\nTokenization completed successfully.")
+    print(f"Decoded: {tok.decode(ids)}")
