@@ -84,6 +84,16 @@ def main():
     try:
         ids, decoded, pieces = run_hf(MursitTokenizer)
         print_result("MursitTokenizer", ids, decoded, pieces)
+
+        # MLM masking demo
+        tok = MursitTokenizer()
+        batch = tok.mlm_encode(SENTENCE)
+        masked_pieces = tok.convert_ids_to_tokens(batch["input_ids"])
+        target_pieces = tok.convert_ids_to_tokens(
+            batch["labels"][batch["labels"] != -100]
+        )
+        print(f"  MLM masked : {masked_pieces}")
+        print(f"  MLM targets: {target_pieces}")
     except Exception as exc:
         print(f"  SKIPPED — could not load model: {exc}")
 
