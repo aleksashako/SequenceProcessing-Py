@@ -23,8 +23,7 @@ Example
 "Türkiye Cumhuriyeti'nin başkenti Ankara'dır."
 """
 
-from BaseTokenizer import BaseTokenizer
-
+from .BaseTokenizer import BaseTokenizer
 
 class CosmosGPT2Tokenizer(BaseTokenizer):
     """HuggingFace-backed wrapper for the CosmosGPT2 BPE tokenizer."""
