@@ -1,11 +1,10 @@
 """
-Comparison test: runs all four tokenizers on the same Turkish sentence
-and prints encode / decode results side-by-side.
+Full comparison test: runs all four tokenizers across multiple Turkish
+sentences and prints per-sentence results plus a summary table.
 
 TurkishTokenizer runs fully offline (dummy morphological resources).
-The three HuggingFace-backed tokenizers (CosmosGPT2, Mursit, TabiBERT)
-require a network connection on first use to download model files.
-If a download fails the test prints a warning and continues.
+CosmosGPT2, Mursit, and TabiBERT require a network connection on first
+use to download model files; each is skipped gracefully if unavailable.
 """
 
 import sys
@@ -17,97 +16,186 @@ from SequenceProcessing.Tokenization.CosmosGPT2Tokenizer import CosmosGPT2Tokeni
 from SequenceProcessing.Tokenization.MursitTokenizer import MursitTokenizer
 from SequenceProcessing.Tokenization.TabiTokenizer import TabiTokenizer
 
-SENTENCE = "Türkiye Cumhuriyeti'nin başkenti Ankara'dır."
+# ── Test sentences ────────────────────────────────────────────────────────────
+# Each covers a different aspect of Turkish morphology / tokenization challenge.
+TEST_CASES = [
+    (
+        "arabalar garajda duruyor.",
+        "root + plural suffix + locative suffix + progressive verb",
+    ),
+    (
+        "Türkiye Cumhuriyeti'nin başkenti Ankara'dır.",
+        "proper nouns, genitive, clitic apostrophe",
+    ),
+    (
+        "Yapay zeka teknolojileri hızla gelişiyor.",
+        "OOV / technical vocabulary, adverb, progressive",
+    ),
+    (
+        "İstanbul dünyanın en güzel şehirlerinden biridir.",
+        "superlative, ablative plural, copula",
+    ),
+    (
+        "Kitabı okuyorum, ama hiçbir şey anlamıyorum!",
+        "accusative, first-person progressive, negation, punctuation",
+    ),
+]
 
-SEPARATOR = "=" * 60
+SEP  = "=" * 72
+THIN = "─" * 72
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 class DummyBPE:
-    """BPE fallback for TurkishTokenizer: returns the word as-is."""
+    """BPE fallback for TurkishTokenizer: echoes the unknown word as one token."""
     def encode(self, text: str):
         return [text]
 
 
-def run_turkish():
+def make_turkish():
     morph = MorphologicalAnalyzer(roots_path="dummy", affixes_path="dummy")
-    tok = TurkishTokenizer(morph_analyzer=morph, bpe_fallback=DummyBPE())
-    ids = tok.encode(SENTENCE)
-    decoded = tok.decode(ids)
-    return ids, decoded
+    return TurkishTokenizer(morph_analyzer=morph, bpe_fallback=DummyBPE())
 
 
-def run_hf(tok_class):
-    tok = tok_class()
-    ids = tok.encode(SENTENCE)
-    decoded = tok.decode(ids)
-    pieces = tok.convert_ids_to_tokens(ids)
-    return ids, decoded, pieces
+def tokenize_all(sentence: str, tok_turkish, cosmos, mursit, tabi):
+    """Return (name, ids, pieces_or_None, decoded, ok) for each tokenizer."""
+    results = []
+
+    # 1. TurkishTokenizer
+    try:
+        ids     = tok_turkish.encode(sentence)
+        decoded = tok_turkish.decode(ids)
+        results.append(("TurkishTokenizer", ids, None, decoded))
+    except Exception as exc:
+        results.append(("TurkishTokenizer", [], None, f"ERROR: {exc}"))
+
+    # 2. CosmosGPT2
+    for name, tok in [
+        ("CosmosGPT2Tokenizer", cosmos),
+        ("MursitTokenizer",     mursit),
+        ("TabiTokenizer",       tabi),
+    ]:
+        if tok is None:
+            results.append((name, [], None, "SKIPPED"))
+            continue
+        try:
+            ids     = tok.encode(sentence)
+            pieces  = tok.convert_ids_to_tokens(ids)
+            decoded = tok.decode(ids)
+            results.append((name, ids, pieces, decoded))
+        except Exception as exc:
+            results.append((name, [], None, f"ERROR: {exc}"))
+
+    return results
 
 
-def print_result(name, ids, decoded, pieces=None):
-    print(f"\n{'─' * 60}")
-    print(f"  Tokenizer : {name}")
-    print(f"  Input     : {SENTENCE}")
-    print(f"  # tokens  : {len(ids)}")
-    if pieces:
-        print(f"  Pieces    : {pieces}")
-    print(f"  IDs       : {ids}")
-    print(f"  Decoded   : {decoded}")
-    ok = SENTENCE.replace(" ", "").lower() == decoded.replace(" ", "").lower()
-    print(f"  Round-trip: {'✓ OK' if ok else '✗ MISMATCH'}")
+def round_trip_ok(original: str, decoded: str) -> bool:
+    return original.replace(" ", "").lower() == decoded.replace(" ", "").lower()
 
+
+def print_sentence_block(sentence: str, note: str, results: list):
+    print(f"\n  Sentence : {sentence}")
+    print(f"  Focus    : {note}")
+    print(THIN)
+    print(f"  {'Tokenizer':<24} {'#tok':>4}  {'Pieces / tokens':<35}  RT")
+    print(THIN)
+    for name, ids, pieces, decoded in results:
+        n    = len(ids)
+        ok   = "✓" if (ids and round_trip_ok(sentence, decoded)) else ("✗" if ids else "—")
+        disp = str(pieces[:6])[1:-1] + ("…" if pieces and len(pieces) > 6 else "") if pieces else str(ids[:6])[1:-1]
+        print(f"  {name:<24} {n:>4}  {disp:<35}  {ok}")
+    print()
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    print(SEPARATOR)
-    print("  ALL-TOKENIZER COMPARISON TEST")
-    print(f"  Sentence: {SENTENCE}")
-    print(SEPARATOR)
+    print(SEP)
+    print("  TURKISH TOKENIZER COMPARISON — DEMO TEST")
+    print(SEP)
 
-    # ── 1. TurkishTokenizer (offline, dummy resources) ──────────────────
-    print("\n[1/4] TurkishTokenizer (morphological + BPE fallback)")
+    # Load tokenizers once (lazy; HF models download on first encode call)
+    tok_turkish = make_turkish()
+
+    print("\nLoading HuggingFace tokenizers …")
+    cosmos = mursit = tabi = None
     try:
-        ids, decoded = run_turkish()
-        print_result("TurkishTokenizer", ids, decoded)
-    except Exception as exc:
-        print(f"  ERROR: {exc}")
+        cosmos = CosmosGPT2Tokenizer()
+        cosmos.encode("test")   # trigger download now, not mid-table
+        print("  CosmosGPT2Tokenizer  ✓")
+    except Exception as e:
+        print(f"  CosmosGPT2Tokenizer  SKIPPED ({e})")
 
-    # ── 2. CosmosGPT2Tokenizer ───────────────────────────────────────────
-    print("\n[2/4] CosmosGPT2Tokenizer  (ytu-ce-cosmos/turkish-gpt2-medium)")
     try:
-        ids, decoded, pieces = run_hf(CosmosGPT2Tokenizer)
-        print_result("CosmosGPT2Tokenizer", ids, decoded, pieces)
-    except Exception as exc:
-        print(f"  SKIPPED — could not load model: {exc}")
+        mursit = MursitTokenizer()
+        mursit.encode("test")
+        print("  MursitTokenizer      ✓")
+    except Exception as e:
+        print(f"  MursitTokenizer      SKIPPED ({e})")
 
-    # ── 3. MursitTokenizer ───────────────────────────────────────────────
-    print("\n[3/4] MursitTokenizer  (newmindai/Mursit-Base)")
     try:
-        ids, decoded, pieces = run_hf(MursitTokenizer)
-        print_result("MursitTokenizer", ids, decoded, pieces)
+        tabi = TabiTokenizer()
+        tabi.encode("test")
+        print("  TabiTokenizer        ✓")
+    except Exception as e:
+        print(f"  TabiTokenizer        SKIPPED ({e})")
 
-        # MLM masking demo
-        tok = MursitTokenizer()
-        batch = tok.mlm_encode(SENTENCE)
-        masked_pieces = tok.convert_ids_to_tokens(batch["input_ids"])
-        target_pieces = tok.convert_ids_to_tokens(
+    # ── Per-sentence results ──────────────────────────────────────────────
+    print(f"\n{SEP}")
+    print("  PER-SENTENCE RESULTS")
+    print(SEP)
+
+    all_counts: dict[str, list[int]] = {
+        "TurkishTokenizer": [],
+        "CosmosGPT2Tokenizer": [],
+        "MursitTokenizer": [],
+        "TabiTokenizer": [],
+    }
+
+    for sentence, note in TEST_CASES:
+        results = tokenize_all(sentence, tok_turkish, cosmos, mursit, tabi)
+        print_sentence_block(sentence, note, results)
+        for name, ids, _, _ in results:
+            if ids:
+                all_counts[name].append(len(ids))
+
+    # ── Summary table ─────────────────────────────────────────────────────
+    print(SEP)
+    print("  SUMMARY  —  token counts per sentence")
+    print(SEP)
+    header = f"  {'Tokenizer':<24}" + "".join(f"  S{i+1:1d}" for i in range(len(TEST_CASES))) + "   avg"
+    print(header)
+    print(THIN)
+    for name, counts in all_counts.items():
+        if not counts:
+            print(f"  {name:<24}  (not available)")
+            continue
+        cells = "".join(f"  {c:2d}" for c in counts)
+        avg   = sum(counts) / len(counts)
+        print(f"  {name:<24}{cells}  {avg:5.1f}")
+
+    print()
+    print("  S1–S5 map to the sentences above in order.")
+
+    # ── MLM demo (Mursit only) ────────────────────────────────────────────
+    if mursit is not None:
+        print(f"\n{SEP}")
+        print("  MURSIT MLM MASKING DEMO  (80/10/10 strategy, p=0.15)")
+        print(SEP)
+        demo_sent = TEST_CASES[1][0]   # sentence 2 — rich morphology
+        batch = mursit.mlm_encode(demo_sent)
+        masked  = mursit.convert_ids_to_tokens(batch["input_ids"])
+        targets = mursit.convert_ids_to_tokens(
             batch["labels"][batch["labels"] != -100]
         )
-        print(f"  MLM masked : {masked_pieces}")
-        print(f"  MLM targets: {target_pieces}")
-    except Exception as exc:
-        print(f"  SKIPPED — could not load model: {exc}")
+        print(f"  Input   : {demo_sent}")
+        print(f"  Masked  : {masked}")
+        print(f"  Targets : {targets}  ({len(targets)} token(s) masked)")
 
-    # ── 4. TabiTokenizer ─────────────────────────────────────────────────
-    print("\n[4/4] TabiTokenizer  (boun-tabilab/TabiBERT)")
-    try:
-        ids, decoded, pieces = run_hf(TabiTokenizer)
-        print_result("TabiTokenizer", ids, decoded, pieces)
-    except Exception as exc:
-        print(f"  SKIPPED — could not load model: {exc}")
-
-    print(f"\n{SEPARATOR}")
+    print(f"\n{SEP}")
     print("  Done.")
-    print(SEPARATOR)
+    print(SEP)
 
 
 if __name__ == "__main__":
