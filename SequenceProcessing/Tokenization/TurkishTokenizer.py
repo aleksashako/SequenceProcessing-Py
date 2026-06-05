@@ -139,7 +139,8 @@ class TurkishTokenizer(BaseTokenizer):
         :param token_ids: Sequence of token IDs as produced by :meth:`encode`.
         :return: Reconstructed Turkish string.
         """
-        parts = []
+        parts    = []
+        part_ids = []   # parallel list — token ID that produced each part
         i = 0
         n = len(token_ids)
 
@@ -154,17 +155,34 @@ class TurkishTokenizer(BaseTokenizer):
                     lead += " "
                     base = base[1:]
                 parts.append(lead + self._turkish_capitalize(base))
+                part_ids.append(next_tid)
                 i += 2
                 continue
 
             candidates = self.morph_analyzer.reverse_lookup(tid)
-            if len(candidates) > 1:
+
+            # Decide whether to call apply_phonology:
+            #   (a) Multiple affix allomorphs → vowel-harmony selection needed.
+            #   (b) Any affix whose preceding ROOT has allomorphs → the root
+            #       may require lenition / narrowing (e.g. kitap→kitab before
+            #       a vowel-initial suffix).  Loanwords with a single root
+            #       form (cumhuriyet, etc.) are intentionally excluded.
+            is_affix = tid in self.morph_analyzer.inv_affix_dict
+            prev_tid = part_ids[-1] if part_ids else None
+            prev_has_allomorphs = (
+                prev_tid is not None
+                and prev_tid in self.morph_analyzer.root_ids_with_allomorphs
+            )
+            use_phonology = len(candidates) > 1 or (is_affix and prev_has_allomorphs)
+
+            if use_phonology:
                 ctx = self.morph_analyzer.get_vowel_context(parts)
                 surface = self.morph_analyzer.apply_phonology(tid, ctx, parts)
             else:
                 surface = candidates[0]
 
             parts.append(self._unwrap_special(surface))
+            part_ids.append(tid)
             i += 1
 
         return "".join(parts)
