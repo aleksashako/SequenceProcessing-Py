@@ -25,6 +25,7 @@ Example
 
 from .BaseTokenizer import BaseTokenizer
 
+
 class CosmosGPT2Tokenizer(BaseTokenizer):
     """HuggingFace-backed wrapper for the CosmosGPT2 BPE tokenizer."""
 
@@ -42,22 +43,25 @@ class CosmosGPT2Tokenizer(BaseTokenizer):
         **from_pretrained_kwargs,
     ):
         """
-        Parameters
-        ----------
-        model_name_or_path
-            HuggingFace repo ID or path to a local tokenizer snapshot.
-            Defaults to :attr:`DEFAULT_MODEL_ID`.
-        add_special_tokens
-            Whether ``encode`` should prepend/append the tokenizer's
-            special tokens (BOS/EOS). The cosmosGPT2 paper trains its
-            GPT-2 models without explicit BOS/EOS, so the default is
-            False to keep encode/decode round-tripping cleanly.
-        cache_dir, revision, local_files_only
+        Constructor for CosmosGPT2Tokenizer.
+
+        :param model_name_or_path: HuggingFace repo ID or path to a local
+            tokenizer snapshot. Defaults to :attr:`DEFAULT_MODEL_ID`
+            (``"ytu-ce-cosmos/turkish-gpt2-medium"``).
+        :param add_special_tokens: Whether ``encode`` should prepend/append
+            the tokenizer's special tokens (BOS/EOS). The CosmosGPT2 paper
+            trains its GPT-2 models without explicit BOS/EOS, so the default
+            is ``False`` to keep encode/decode round-tripping cleanly.
+        :param cache_dir: Directory to cache downloaded tokenizer files.
             Forwarded to ``AutoTokenizer.from_pretrained``.
-        from_pretrained_kwargs
-            Any additional keyword arguments to forward to
-            ``AutoTokenizer.from_pretrained`` (e.g.
-            ``trust_remote_code=True``).
+        :param revision: Specific model version (branch, tag, or commit hash).
+            Forwarded to ``AutoTokenizer.from_pretrained``.
+        :param local_files_only: If ``True``, only use locally cached files
+            and raise an error if the model is not already downloaded.
+            Forwarded to ``AutoTokenizer.from_pretrained``.
+        :param from_pretrained_kwargs: Any additional keyword arguments
+            forwarded to ``AutoTokenizer.from_pretrained``
+            (e.g. ``trust_remote_code=True``).
         """
         self.model_name_or_path = model_name_or_path or self.DEFAULT_MODEL_ID
         self.add_special_tokens = add_special_tokens
@@ -67,11 +71,20 @@ class CosmosGPT2Tokenizer(BaseTokenizer):
         self._extra_kwargs = from_pretrained_kwargs
         self._tokenizer = None  # lazy
 
-    # load
+    # ------------------------------------------------------------------ LOAD
 
     @property
     def tokenizer(self):
-        """The lazily-instantiated HuggingFace tokenizer."""
+        """
+        The lazily-instantiated HuggingFace tokenizer.
+
+        The underlying ``AutoTokenizer`` is created on first access and then
+        cached in :attr:`_tokenizer`. This ensures that importing the module
+        or constructing the wrapper does not trigger a network request.
+
+        :raises ImportError: If the ``transformers`` package is not installed.
+        :return: Loaded ``AutoTokenizer`` instance.
+        """
         if self._tokenizer is None:
             try:
                 from transformers import AutoTokenizer
@@ -90,41 +103,96 @@ class CosmosGPT2Tokenizer(BaseTokenizer):
             )
         return self._tokenizer
 
-    # BaseTokenizer
+    # --------------------------------------------------------- BaseTokenizer
 
     def encode(self, text: str) -> list:
-        """Encode ``text`` to a list of integer token IDs."""
+        """
+        Encode a string into a list of integer BPE token IDs.
+
+        Delegates directly to the underlying HuggingFace tokenizer. Whether
+        BOS/EOS special tokens are prepended/appended is controlled by the
+        :attr:`add_special_tokens` flag set at construction time.
+
+        :param text: Input string to tokenize.
+        :return: List of integer token IDs.
+        """
         return self.tokenizer.encode(text, add_special_tokens=self.add_special_tokens)
 
     def decode(self, token_ids) -> str:
-        """Decode a list of integer token IDs back to a string."""
+        """
+        Decode a list of integer token IDs back to a string.
+
+        Delegates to the underlying HuggingFace tokenizer. Special tokens
+        (BOS/EOS) are stripped when :attr:`add_special_tokens` is ``False``.
+
+        :param token_ids: Sequence of integer token IDs (list, tuple, or
+            any iterable).
+        :return: Decoded surface-form string.
+        """
         return self.tokenizer.decode(
             list(token_ids),
             skip_special_tokens=not self.add_special_tokens,
         )
 
-    # convenience extras
+    # --------------------------------------------------------- CONVENIENCE
 
     def tokenize(self, text: str) -> list:
-        """Return the raw subword token strings (no ID conversion)."""
+        """
+        Return the raw BPE subword token strings without converting to IDs.
+
+        Useful for inspecting how the text is split before the vocabulary
+        lookup step.
+
+        :param text: Input string to tokenize.
+        :return: List of subword token strings (e.g. ``['Türk', 'iye']``).
+        """
         return self.tokenizer.tokenize(text)
 
     def convert_ids_to_tokens(self, token_ids) -> list:
+        """
+        Map a sequence of integer token IDs to their string representations.
+
+        :param token_ids: Sequence of integer token IDs.
+        :return: List of token strings corresponding to each ID.
+        """
         return self.tokenizer.convert_ids_to_tokens(list(token_ids))
 
     @property
     def vocab_size(self) -> int:
+        """
+        Total number of tokens in the BPE vocabulary.
+
+        :return: integer vocab size
+        """
         return self.tokenizer.vocab_size
 
     @property
     def pad_token_id(self):
+        """
+        ID of the padding token, or ``None`` if the tokenizer has no pad token.
+
+        :return: integer pad token ID, or ``None``
+        """
         return self.tokenizer.pad_token_id
 
     @property
     def eos_token_id(self):
+        """
+        ID of the end-of-sequence token, or ``None`` if not defined.
+
+        :return: integer EOS token ID, or ``None``
+        """
         return self.tokenizer.eos_token_id
 
     def __repr__(self):
+        """
+        Return a short string representation showing the model path and
+        whether the underlying tokenizer has been loaded yet.
+
+        :return: String of the form
+            ``CosmosGPT2Tokenizer(model='...', loaded)`` or
+            ``CosmosGPT2Tokenizer(model='...', lazy)``.
+        """
         loaded = "loaded" if self._tokenizer is not None else "lazy"
         return f"CosmosGPT2Tokenizer(model={self.model_name_or_path!r}, {loaded})"
 
