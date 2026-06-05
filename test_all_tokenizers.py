@@ -113,22 +113,44 @@ def make_turkish():
         morph = MorphologicalAnalyzer(roots_path="dummy", affixes_path="dummy")
         label = "DUMMY vocab — run download_vocabs.py for full dictionary"
     print(f"  TurkishTokenizer morphology: {label}")
-    return TurkishTokenizer(morph_analyzer=morph, bpe_fallback=DummyBPE())
+    tok = TurkishTokenizer(morph_analyzer=morph, bpe_fallback=DummyBPE())
+    return tok, morph
 
 
-def tokenize_all(sentence: str, tok_turkish, cosmos, mursit, tabi):
-    """Return (name, ids, pieces_or_None, decoded, ok) for each tokenizer."""
+def turkish_pieces(morph, ids: list) -> list:
+    """Convert TurkishTokenizer token IDs to readable surface-form strings.
+
+    Roots are shown as plain words (leading space stripped).
+    Suffix tokens are shown with a '+' prefix to distinguish them from roots.
+    String special tokens (<uppercase>, <P:x>, …) are kept as-is.
+    """
+    result = []
+    for tid in ids:
+        if isinstance(tid, str):          # special / OOV string token
+            result.append(tid)
+        elif tid in morph.inv_root_dict:
+            result.append(morph.inv_root_dict[tid].strip())
+        elif tid in morph.inv_affix_dict:
+            result.append("+" + morph.inv_affix_dict[tid][0])
+        else:
+            result.append(str(tid))
+    return result
+
+
+def tokenize_all(sentence: str, tok_turkish, morph, cosmos, mursit, tabi):
+    """Return (name, ids, pieces_or_None, decoded) for each tokenizer."""
     results = []
 
-    # 1. TurkishTokenizer
+    # 1. TurkishTokenizer — pieces shown as human-readable surface forms
     try:
         ids     = tok_turkish.encode(sentence)
         decoded = tok_turkish.decode(ids)
-        results.append(("TurkishTokenizer", ids, None, decoded))
+        pieces  = turkish_pieces(morph, ids)
+        results.append(("TurkishTokenizer", ids, pieces, decoded))
     except Exception as exc:
         results.append(("TurkishTokenizer", [], None, f"ERROR: {exc}"))
 
-    # 2. CosmosGPT2
+    # 2–4. HuggingFace tokenizers
     for name, tok in [
         ("CosmosGPT2Tokenizer", cosmos),
         ("MursitTokenizer",     mursit),
@@ -178,7 +200,7 @@ def main():
     print(SEP)
 
     # Load tokenizers once (lazy; HF models download on first encode call)
-    tok_turkish = make_turkish()
+    tok_turkish, morph = make_turkish()
 
     print("\nLoading HuggingFace tokenizers …")
     cosmos = mursit = tabi = None
@@ -216,7 +238,7 @@ def main():
     }
 
     for sentence, note in TEST_CASES:
-        results = tokenize_all(sentence, tok_turkish, cosmos, mursit, tabi)
+        results = tokenize_all(sentence, tok_turkish, morph, cosmos, mursit, tabi)
         print_sentence_block(sentence, note, results)
         for name, ids, _, _ in results:
             if ids:
