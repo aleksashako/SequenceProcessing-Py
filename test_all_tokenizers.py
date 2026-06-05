@@ -7,8 +7,49 @@ CosmosGPT2, Mursit, and TabiBERT require a network connection on first
 use to download model files; each is skipped gracefully if unavailable.
 """
 
+import os
 import sys
 sys.stdout.reconfigure(encoding="utf-8")
+
+
+# ── GPT-2 / ModernBERT byte-level BPE decoder ────────────────────────────────
+# HuggingFace BPE tokenizers represent every byte as a unique Unicode character
+# (GPT-2 byte-level encoding). Non-ASCII bytes like 0xC3 0xBC (ü in UTF-8)
+# appear as 'Ã¼', and a leading space becomes 'Ġ' (U+0120).
+# This map inverts that encoding so token pieces print as readable Turkish text.
+
+def _make_unicode_to_byte_map() -> dict:
+    bs = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(ord("¡"), ord("¬") + 1))
+        + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return {chr(c): b for b, c in zip(bs, cs)}
+
+_U2B = _make_unicode_to_byte_map()
+
+
+def readable_piece(piece: str) -> str:
+    """Decode a single GPT-2 byte-level BPE piece to a readable Unicode string."""
+    try:
+        return bytes(_U2B[ch] for ch in piece).decode("utf-8")
+    except (KeyError, UnicodeDecodeError):
+        return piece  # TurkishTokenizer tokens are already plain strings
+
+
+def readable_pieces(pieces) -> list:
+    """Apply readable_piece to every element of a list (or return None)."""
+    if pieces is None:
+        return None
+    return [readable_piece(p) for p in pieces]
+
 
 from SequenceProcessing.Tokenization.MorphologicalAnalyzer import MorphologicalAnalyzer
 from SequenceProcessing.Tokenization.TurkishTokenizer import TurkishTokenizer
@@ -53,8 +94,25 @@ class DummyBPE:
         return [text]
 
 
+# ── Paths to the official vocabulary files (downloaded by download_vocabs.py) ─
+_HERE       = os.path.dirname(os.path.abspath(__file__))
+_VOCAB_DIR  = os.path.join(_HERE, "SequenceProcessing", "Tokenization", "vocabs")
+_ROOTS_PATH = os.path.join(_VOCAB_DIR, "kokler.json")
+_AFFIX_PATH = os.path.join(_VOCAB_DIR, "ekler.json")
+_FULL_VOCAB = os.path.isfile(_ROOTS_PATH) and os.path.isfile(_AFFIX_PATH)
+
+
 def make_turkish():
-    morph = MorphologicalAnalyzer(roots_path="dummy", affixes_path="dummy")
+    if _FULL_VOCAB:
+        morph = MorphologicalAnalyzer(
+            roots_path=_ROOTS_PATH,
+            affixes_path=_AFFIX_PATH,
+        )
+        label = "full vocab (22k roots / 72 affix IDs)"
+    else:
+        morph = MorphologicalAnalyzer(roots_path="dummy", affixes_path="dummy")
+        label = "DUMMY vocab — run download_vocabs.py for full dictionary"
+    print(f"  TurkishTokenizer morphology: {label}")
     return TurkishTokenizer(morph_analyzer=morph, bpe_fallback=DummyBPE())
 
 
@@ -98,13 +156,17 @@ def print_sentence_block(sentence: str, note: str, results: list):
     print(f"\n  Sentence : {sentence}")
     print(f"  Focus    : {note}")
     print(THIN)
-    print(f"  {'Tokenizer':<24} {'#tok':>4}  {'Pieces / tokens':<35}  RT")
+    print(f"  {'Tokenizer':<24} {'#tok':>4}  {'Pieces / tokens':<42}  RT")
     print(THIN)
     for name, ids, pieces, decoded in results:
         n    = len(ids)
         ok   = "✓" if (ids and round_trip_ok(sentence, decoded)) else ("✗" if ids else "—")
-        disp = str(pieces[:6])[1:-1] + ("…" if pieces and len(pieces) > 6 else "") if pieces else str(ids[:6])[1:-1]
-        print(f"  {name:<24} {n:>4}  {disp:<35}  {ok}")
+        if pieces:
+            human = readable_pieces(pieces)
+            disp  = str(human[:6])[1:-1] + ("…" if len(human) > 6 else "")
+        else:
+            disp  = str(ids[:6])[1:-1]
+        print(f"  {name:<24} {n:>4}  {disp:<42}  {ok}")
     print()
 
 
@@ -185,10 +247,10 @@ def main():
         print(SEP)
         demo_sent = TEST_CASES[1][0]   # sentence 2 — rich morphology
         batch = mursit.mlm_encode(demo_sent)
-        masked  = mursit.convert_ids_to_tokens(batch["input_ids"])
-        targets = mursit.convert_ids_to_tokens(
+        masked  = readable_pieces(mursit.convert_ids_to_tokens(batch["input_ids"]))
+        targets = readable_pieces(mursit.convert_ids_to_tokens(
             batch["labels"][batch["labels"] != -100]
-        )
+        ))
         print(f"  Input   : {demo_sent}")
         print(f"  Masked  : {masked}")
         print(f"  Targets : {targets}  ({len(targets)} token(s) masked)")
