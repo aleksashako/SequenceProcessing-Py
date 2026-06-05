@@ -48,10 +48,28 @@ class MorphologicalAnalyzer:
                 "de": "A_2",
             }
 
-        self.inv_root_dict = {v: k for k, v in self.root_dict.items()}
+        # Keep the FIRST surface form seen for each root ID so that
+        # phonological variants (e.g. "kitap"/"kitab"/"kita" → same ID)
+        # decode back to the canonical base form.
+        self.inv_root_dict = {}
+        for surface_form, root_id in self.root_dict.items():
+            if root_id not in self.inv_root_dict:
+                self.inv_root_dict[root_id] = surface_form
+
+        # Affixes keep ALL allomorphs per ID so apply_phonology can
+        # choose the correct surface form during decode.
         self.inv_affix_dict = {}
         for surface_form, affix_id in self.affix_dict.items():
             self.inv_affix_dict.setdefault(affix_id, []).append(surface_form)
+
+        # Root IDs that have more than one surface form (phonological
+        # allomorphs, e.g. "kitap"/"kitab"). Only these stems undergo
+        # lenition / vowel alternation during decode.
+        from collections import Counter
+        _counts = Counter(self.root_dict.values())
+        self.root_ids_with_allomorphs = frozenset(
+            rid for rid, cnt in _counts.items() if cnt > 1
+        )
 
         self.vowels = self.VOWELS
         self.back_vowels = self.BACK_VOWELS
